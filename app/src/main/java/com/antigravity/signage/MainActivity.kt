@@ -116,7 +116,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startPolling() {
-        handler.postDelayed(object : Runnable {
+        val pollingRunnable = object : Runnable {
             override fun run() {
                 if (currentPairingCode == null) return
 
@@ -129,7 +129,7 @@ class MainActivity : AppCompatActivity() {
 
                 client.newCall(request).enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) {
-                        handler.postDelayed(this, 5000)
+                        handler.postDelayed(pollingRunnable, 5000)
                     }
 
                     override fun onResponse(call: Call, response: Response) {
@@ -151,11 +151,12 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
                         response.close()
-                        handler.postDelayed(this, 3000)
+                        handler.postDelayed(pollingRunnable, 3000)
                     }
                 })
             }
-        }, 3000)
+        }
+        handler.postDelayed(pollingRunnable, 3000)
     }
 
     private fun saveAndStart(screenId: String) {
