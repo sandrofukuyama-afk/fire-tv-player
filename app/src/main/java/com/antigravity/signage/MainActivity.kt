@@ -129,7 +129,7 @@ class MainActivity : AppCompatActivity() {
 
                 client.newCall(request).enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) {
-                        handler.postDelayed(this@Runnable, 5000)
+                        handler.postDelayed(this, 5000)
                     }
 
                     override fun onResponse(call: Call, response: Response) {
@@ -151,7 +151,7 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
                         response.close()
-                        handler.postDelayed(this@Runnable, 3000)
+                        handler.postDelayed(this, 3000)
                     }
                 })
             }
