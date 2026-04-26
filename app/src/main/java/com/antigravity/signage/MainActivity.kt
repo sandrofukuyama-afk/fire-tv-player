@@ -176,8 +176,18 @@ class MainActivity : AppCompatActivity() {
         Log.d(TAG, "Iniciando WebView para tela $screenId")
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webview)
-        setupWebView()
-        webView?.loadUrl("$BASE_PLAYER_URL$screenId")
+
+        webView?.let { v ->
+            // Limpa cache para garantir que carregue a versão mais nova do player
+            v.clearCache(true)
+            CookieManager.getInstance().removeAllCookies(null)
+            
+            setupWebView()
+            
+            // Adiciona timestamp para evitar cache
+            val finalUrl = "$BASE_PLAYER_URL$screenId?t=${System.currentTimeMillis()}"
+            v.loadUrl(finalUrl)
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
