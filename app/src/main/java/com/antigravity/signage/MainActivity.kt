@@ -236,7 +236,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onReceivedError(v: WebView?, r: WebResourceRequest?, e: WebResourceError?) {
-                    val errorCode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION.SDK_INT) e?.errorCode else -1
+                    val errorCode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) e?.errorCode else -1
                     Log.e(TAG, "Erro WebView ($errorCode): ${e?.description}")
                     
                     // Se falhar em carregar, tenta novamente após 10 segundos
