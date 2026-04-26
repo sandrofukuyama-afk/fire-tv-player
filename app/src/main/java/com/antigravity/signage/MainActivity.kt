@@ -183,9 +183,15 @@ class MainActivity : AppCompatActivity() {
             val settings = view.settings
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
+            settings.databaseEnabled = true
+            settings.allowFileAccess = true
+            settings.allowContentAccess = true
             settings.mediaPlaybackRequiresUserGesture = false
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = true
+            
+            // Configurações de Cache para modo offline/instável
+            settings.cacheMode = WebSettings.LOAD_DEFAULT
             
             // Suporte a Mixed Content para vídeos HTTP em sites HTTPS
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
