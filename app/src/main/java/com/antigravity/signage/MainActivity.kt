@@ -41,21 +41,17 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "App iniciado")
         
-        // MODO KIOSK
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemUI()
         
-        // Habilita depuração remota via Chrome DevTools (chrome://inspect)
         WebView.setWebContentsDebuggingEnabled(true)
 
         val sharedPref = getPreferences(Context.MODE_PRIVATE)
         val screenId = sharedPref.getString("screenId", null)
 
         if (screenId != null) {
-            Log.d(TAG, "ID de tela encontrado: $screenId")
             startPlayer(screenId.trim())
         } else {
-            Log.d(TAG, "Nenhum ID encontrado, iniciando pareamento")
             showPairingScreen()
         }
     }
@@ -66,12 +62,9 @@ class MainActivity : AppCompatActivity() {
             pairingCodeText = findViewById(R.id.pairing_code_text)
             statusText = findViewById(R.id.status_text)
             progressBar = findViewById(R.id.pairing_progress)
-            
-            Log.d(TAG, "Layout de pareamento carregado")
             generateAndRegisterCode()
         } catch (e: Exception) {
-            Log.e(TAG, "Erro ao carregar layout de pareamento", e)
-            Toast.makeText(this, "Erro de layout. Verifique se o arquivo XML existe.", Toast.LENGTH_LONG).show()
+            Log.e(TAG, "Erro layout", e)
         }
     }
 
@@ -79,7 +72,7 @@ class MainActivity : AppCompatActivity() {
         val code = (100000..999999).random().toString()
         currentPairingCode = code
         pairingCodeText?.text = code
-        statusText?.text = "Registrando código no servidor..."
+        statusText?.text = "Registrando código..."
         progressBar?.visibility = View.VISIBLE
 
         val json = JSONObject()
@@ -96,24 +89,18 @@ class MainActivity : AppCompatActivity() {
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e(TAG, "Falha ao registrar código", e)
-                runOnUiThread { 
-                    statusText?.text = "Erro de rede. Tentando novamente em 5s..." 
-                }
+                runOnUiThread { statusText?.text = "Erro de rede. Tentando..." }
                 handler.postDelayed({ generateAndRegisterCode() }, 5000)
             }
 
             override fun onResponse(call: Call, response: Response) {
                 if (response.isSuccessful) {
-                    Log.d(TAG, "Código registrado com sucesso: $code")
                     runOnUiThread { 
-                        statusText?.text = "Aguardando ativação no Dashboard..." 
+                        statusText?.text = "Aguardando ativação..." 
                         progressBar?.visibility = View.GONE
                     }
                     startPolling()
                 } else {
-                    Log.e(TAG, "Erro do servidor: ${response.code} ${response.message}")
-                    runOnUiThread { statusText?.text = "Servidor ocupado (Erro ${response.code}). Tentando..." }
                     handler.postDelayed({ generateAndRegisterCode() }, 5000)
                 }
                 response.close()
@@ -148,14 +135,11 @@ class MainActivity : AppCompatActivity() {
                                     val obj = jsonArray.getJSONObject(0)
                                     if (!obj.isNull("screen_id")) {
                                         val screenId = obj.getString("screen_id")
-                                        Log.d(TAG, "Tela pareada! ID: $screenId")
                                         saveAndStart(screenId)
                                         return
                                     }
                                 }
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Erro ao processar JSON de polling", e)
-                            }
+                            } catch (e: Exception) {}
                         }
                         response.close()
                         handler.postDelayed(self, 3000)
@@ -176,19 +160,11 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun startPlayer(screenId: String) {
-        Log.d(TAG, "Iniciando WebView para tela $screenId")
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webview)
 
         webView?.let { v ->
-            // ULTRA COMPATIBILIDADE: Força modo software se necessário
-            // v.setLayerType(View.LAYER_TYPE_SOFTWARE, null) 
-            
-            // Limpa tudo para garantir fresh start
             v.clearCache(true)
-            v.clearHistory()
-            v.clearFormData()
-            
             val cookieManager = CookieManager.getInstance()
             cookieManager.setAcceptCookie(true)
             cookieManager.removeAllCookies(null)
@@ -196,9 +172,7 @@ class MainActivity : AppCompatActivity() {
             
             setupWebView()
             
-            // Adiciona timestamp para evitar cache do servidor/CDN
             val finalUrl = "$BASE_PLAYER_URL$screenId?t=${System.currentTimeMillis()}"
-            Log.d(TAG, "Carregando URL: $finalUrl")
             v.loadUrl(finalUrl)
         }
     }
@@ -207,47 +181,22 @@ class MainActivity : AppCompatActivity() {
     private fun setupWebView() {
         webView?.let { view ->
             val settings = view.settings
-            
-            // Configurações críticas para React/Vite
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
-            settings.javaScriptCanOpenWindowsAutomatically = true
-            
-            // Configurações de visualização
-            settings.useWideViewPort = true
-            settings.loadWithOverviewMode = true
-            settings.setSupportZoom(false)
-            
-            // Suporte a mídia
             settings.mediaPlaybackRequiresUserGesture = false
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            
-            // User Agent moderno para evitar bloqueios ou versões "mobile" limitadas
             settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            
-            // Cache - LOAD_NO_CACHE garante que sempre pegue a versão nova durante o troubleshooting
-            settings.cacheMode = WebSettings.LOAD_NO_CACHE
             
             view.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
-                    Log.d(TAG, "Página carregada: $url")
                 }
 
-                override fun onReceivedError(v: WebView?, r: WebResourceRequest?, e: WebResourceError?) {
-                    val errorCode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) e?.errorCode else -1
-                    Log.e(TAG, "Erro WebView ($errorCode): ${e?.description}")
-                    
-                    // Se falhar em carregar, tenta novamente após 10 segundos
+                @Deprecated("Deprecated in Java")
+                override fun onReceivedError(v: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
+                    Log.e(TAG, "Erro WebView: $description")
                     v?.postDelayed({ v.reload() }, 10000)
-                }
-            }
-            
-            view.webChromeClient = object : WebChromeClient() {
-                override fun onConsoleMessage(message: ConsoleMessage?): Boolean {
-                    Log.d("WebConsole", "[${message?.messageLevel()}] ${message?.message()} (Linha: ${message?.lineNumber()})")
-                    return true
                 }
             }
         }
@@ -267,9 +216,7 @@ class MainActivity : AppCompatActivity() {
                 or View.SYSTEM_UI_FLAG_FULLSCREEN)
     }
 
-    override fun onBackPressed() {
-        // Desabilitado para evitar fechar o player acidentalmente no controle remoto
-    }
+    override fun onBackPressed() {}
 
     override fun onResume() {
         super.onResume()
