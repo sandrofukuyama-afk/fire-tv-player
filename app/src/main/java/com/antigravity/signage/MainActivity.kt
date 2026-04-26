@@ -2,64 +2,55 @@ package com.antigravity.signage
 
 import android.os.Bundle
 import android.util.Log
-import android.view.View
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
-import com.antigravity.signage.R
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.google.gson.Gson
 import okhttp3.*
-import org.json.JSONArray
 import java.io.IOException
 
 class MainActivity : AppCompatActivity() {
 
-    private var player: ExoPlayer? = null
     private lateinit var playerView: PlayerView
-    private val client = OkHttpClient()
-
-    // --- CONFIGURAÇÃO SUPABASE ---
+    private var player: ExoPlayer? = null
     private val SUPABASE_URL = "https://tbotzfqrpeufvqxtpjci.supabase.co"
-    private val SUPABASE_KEY = "sb_publishable_PA03417QIfOz8FyoaHB36w_VTzRkbL2"
-    private val PLAYER_ID = "1" // ID do player cadastrado no seu banco
-    // ----------------------------
+    private val SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRib3R6ZnFycGV1ZnZxeHRwamNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3NzIxNzIsImV4cCI6MjA5MjM0ODE3Mn0.OeOOtjHcMS3q-EgrBX-YprMrshcxhRjdrfwcd_4bv6s"
+    private val SCREEN_ID = "890615e8-0015-44ac-8504-6f809544a534"
+    
+    private var playlistUrls = mutableListOf<String>()
+    private var currentIndex = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        hideSystemUI()
-        
         setContentView(R.layout.activity_main)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         playerView = findViewById(R.id.player_view)
-
-        initializePlayer()
-        fetchVideoUrlFromSupabase()
+        setupPlayer()
+        fetchPlaylist()
     }
 
-    private fun hideSystemUI() {
-        window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_FULLSCREEN)
+    private fun setupPlayer() {
+        player = ExoPlayer.Builder(this).build()
+        playerView.player = player
+        player?.repeatMode = Player.REPEAT_MODE_OFF // Controlaremos manualmente a playlist
+        
+        player?.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED) {
+                    playNext()
+                }
+            }
+        })
     }
 
-    private fun initializePlayer() {
-        player = ExoPlayer.Builder(this).build().also { exoPlayer ->
-            playerView.player = exoPlayer
-            playerView.useController = false
-            exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
-            exoPlayer.prepare()
-        }
-    }
-
-    private fun fetchVideoUrlFromSupabase() {
-        // Busca o vídeo na tabela 'players' onde o ID é o definido acima
-        val url = "$SUPABASE_URL/rest/v1/players?id=eq.$PLAYER_ID&select=current_video_url"
+    private fun fetchPlaylist() {
+        val client = OkHttpClient()
+        // Query complexa para pegar os links dos vídeos da playlist atual da tela
+        val url = "$SUPABASE_URL/rest/v1/playlist_items?playlist_id=eq.1c874713-017a-494f-998b-7c4caee5c9e3&select=media(url)&order=sort_order.asc"
         
         val request = Request.Builder()
             .url(url)
@@ -69,42 +60,49 @@ class MainActivity : AppCompatActivity() {
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e("Supabase", "Erro de rede: ${e.message}")
+                Log.e("FireSignage", "Error fetching playlist", e)
+                // Tenta novamente em 30 segundos
+                playerView.postDelayed({ fetchPlaylist() }, 30000)
             }
 
             override fun onResponse(call: Call, response: Response) {
-                val body = response.body?.string()
-                if (response.isSuccessful && body != null) {
-                    try {
-                        val jsonArray = JSONArray(body)
-                        if (jsonArray.length() > 0) {
-                            val videoUrl = jsonArray.getJSONObject(0).getString("current_video_url")
-                            runOnUiThread {
-                                playVideo(videoUrl)
-                            }
+                response.use {
+                    if (!response.isSuccessful) return
+                    val body = response.body?.string() ?: ""
+                    val items = Gson().fromJson(body, Array<PlaylistItemResponse>::class.java)
+                    
+                    val urls = items.mapNotNull { it.media?.url }
+                    if (urls.isNotEmpty()) {
+                        runOnUiThread {
+                            playlistUrls.clear()
+                            playlistUrls.addAll(urls)
+                            currentIndex = 0
+                            playVideo(playlistUrls[currentIndex])
                         }
-                    } catch (e: Exception) {
-                        Log.e("Supabase", "Erro ao processar JSON: ${e.message}")
                     }
                 }
             }
         })
     }
 
-    private fun playVideo(videoUrl: String) {
-        val mediaItem = MediaItem.fromUri(videoUrl)
+    private fun playVideo(url: String) {
+        val mediaItem = MediaItem.fromUri(url)
         player?.setMediaItem(mediaItem)
-        player?.playWhenReady = true
+        player?.prepare()
+        player?.play()
     }
 
-    override fun onResume() {
-        super.onResume()
-        hideSystemUI()
+    private fun playNext() {
+        if (playlistUrls.isEmpty()) return
+        currentIndex = (currentIndex + 1) % playlistUrls.size
+        playVideo(playlistUrls[currentIndex])
     }
 
     override fun onDestroy() {
         super.onDestroy()
         player?.release()
-        player = null
     }
+
+    data class PlaylistItemResponse(val media: MediaResponse?)
+    data class MediaResponse(val url: String?)
 }
