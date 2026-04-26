@@ -20,7 +20,7 @@ jobs:
     - name: Setup Gradle
       uses: gradle/gradle-build-action@v2
       with:
-        gradle-version: 8.0 # Versão que está no seu gradle-wrapper.properties
+        gradle-version: 8.1.1
 
     - name: Build with Gradle
       run: gradle assembleDebug
