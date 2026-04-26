@@ -44,6 +44,9 @@ class MainActivity : AppCompatActivity() {
         // MODO KIOSK
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemUI()
+        
+        // Habilita depuração remota via Chrome DevTools (chrome://inspect)
+        WebView.setWebContentsDebuggingEnabled(true)
 
         val sharedPref = getPreferences(Context.MODE_PRIVATE)
         val screenId = sharedPref.getString("screenId", null)
@@ -199,9 +202,14 @@ class MainActivity : AppCompatActivity() {
             view.setLayerType(View.LAYER_TYPE_HARDWARE, null)
             
             view.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    Log.d(TAG, "Página carregada com sucesso: $url")
+                }
+
                 override fun onReceivedError(v: WebView?, r: WebResourceRequest?, e: WebResourceError?) {
-                    Log.w(TAG, "Erro no WebView. Recarregando...")
-                    view.postDelayed({ view.reload() }, 5000)
+                    Log.w(TAG, "Erro no WebView: ${e?.description}. Recarregando...")
+                    v?.postDelayed({ v.reload() }, 5000)
                 }
             }
             
