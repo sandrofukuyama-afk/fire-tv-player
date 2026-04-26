@@ -5,11 +5,13 @@ import android.content.Context
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
 import android.webkit.*
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
@@ -21,10 +23,11 @@ import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var webView: WebView
-    private lateinit var pairingCodeText: TextView
-    private lateinit var statusText: TextView
-    private lateinit var progressBar: ProgressBar
+    private val TAG = "SignagePlayer"
+    private var webView: WebView? = null
+    private var pairingCodeText: TextView? = null
+    private var statusText: TextView? = null
+    private var progressBar: ProgressBar? = null
 
     private val SUPABASE_URL = "https://tbotzfqrpeufvqxtpjci.supabase.co"
     private val SUPABASE_KEY = "sb_publishable_PA03417QIfOz8FyoaHB36w_VTzRkbL2"
@@ -36,6 +39,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.d(TAG, "App iniciado")
         
         // MODO KIOSK
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -45,25 +49,35 @@ class MainActivity : AppCompatActivity() {
         val screenId = sharedPref.getString("screenId", null)
 
         if (screenId != null) {
+            Log.d(TAG, "ID de tela encontrado: $screenId")
             startPlayer(screenId)
         } else {
+            Log.d(TAG, "Nenhum ID encontrado, iniciando pareamento")
             showPairingScreen()
         }
     }
 
     private fun showPairingScreen() {
-        setContentView(R.layout.activity_pairing)
-        pairingCodeText = findViewById(R.id.pairing_code_text)
-        statusText = findViewById(R.id.status_text)
-        progressBar = findViewById(R.id.pairing_progress)
-
-        generateAndRegisterCode()
+        try {
+            setContentView(R.layout.activity_pairing)
+            pairingCodeText = findViewById(R.id.pairing_code_text)
+            statusText = findViewById(R.id.status_text)
+            progressBar = findViewById(R.id.pairing_progress)
+            
+            Log.d(TAG, "Layout de pareamento carregado")
+            generateAndRegisterCode()
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao carregar layout de pareamento", e)
+            Toast.makeText(this, "Erro de layout", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun generateAndRegisterCode() {
         val code = (100000..999999).random().toString()
         currentPairingCode = code
-        pairingCodeText.text = code
+        pairingCodeText?.text = code
+        statusText?.text = "Registrando código no servidor..."
+        progressBar?.visibility = View.VISIBLE
 
         val json = JSONObject()
         json.put("code", code)
@@ -79,17 +93,24 @@ class MainActivity : AppCompatActivity() {
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                runOnUiThread { statusText.text = "Erro de conexão. Tentando novamente..." }
+                Log.e(TAG, "Falha ao registrar código", e)
+                runOnUiThread { 
+                    statusText?.text = "Erro de rede. Tentando novamente..." 
+                }
                 handler.postDelayed({ generateAndRegisterCode() }, 5000)
             }
 
             override fun onResponse(call: Call, response: Response) {
                 if (response.isSuccessful) {
+                    Log.d(TAG, "Código registrado com sucesso: $code")
+                    runOnUiThread { statusText?.text = "Aguardando ativação no Dashboard..." }
                     startPolling()
                 } else {
-                    runOnUiThread { statusText.text = "Erro ao registrar código. Tentando novamente..." }
+                    Log.e(TAG, "Erro do servidor: ${response.code} ${response.message}")
+                    runOnUiThread { statusText?.text = "Servidor ocupado. Tentando novamente..." }
                     handler.postDelayed({ generateAndRegisterCode() }, 5000)
                 }
+                response.close()
             }
         })
     }
@@ -97,6 +118,8 @@ class MainActivity : AppCompatActivity() {
     private fun startPolling() {
         handler.postDelayed(object : Runnable {
             override fun run() {
+                if (currentPairingCode == null) return
+
                 val request = Request.Builder()
                     .url("$SUPABASE_URL/rest/v1/pairing_codes?code=eq.$currentPairingCode&select=screen_id")
                     .get()
@@ -105,21 +128,29 @@ class MainActivity : AppCompatActivity() {
                     .build()
 
                 client.newCall(request).enqueue(object : Callback {
-                    override fun onFailure(call: Call, e: IOException) {}
+                    override fun onFailure(call: Call, e: IOException) {
+                        handler.postDelayed(this@Runnable, 5000)
+                    }
 
                     override fun onResponse(call: Call, response: Response) {
                         val body = response.body?.string()
                         if (response.isSuccessful && body != null) {
-                            val jsonArray = JSONArray(body)
-                            if (jsonArray.length() > 0) {
-                                val obj = jsonArray.getJSONObject(0)
-                                if (!obj.isNull("screen_id")) {
-                                    val screenId = obj.getString("screen_id")
-                                    saveAndStart(screenId)
-                                    return
+                            try {
+                                val jsonArray = JSONArray(body)
+                                if (jsonArray.length() > 0) {
+                                    val obj = jsonArray.getJSONObject(0)
+                                    if (!obj.isNull("screen_id")) {
+                                        val screenId = obj.getString("screen_id")
+                                        Log.d(TAG, "Tela pareada! ID: $screenId")
+                                        saveAndStart(screenId)
+                                        return
+                                    }
                                 }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Erro ao processar JSON", e)
                             }
                         }
+                        response.close()
                         handler.postDelayed(this@Runnable, 3000)
                     }
                 })
@@ -138,30 +169,42 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun startPlayer(screenId: String) {
+        Log.d(TAG, "Iniciando WebView para tela $screenId")
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webview)
         setupWebView()
-        webView.loadUrl("$BASE_PLAYER_URL$screenId")
+        webView?.loadUrl("$BASE_PLAYER_URL$screenId")
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
-        val settings = webView.settings
-        settings.javaScriptEnabled = true
-        settings.domStorageEnabled = true
-        settings.mediaPlaybackRequiresUserGesture = false
-        settings.useWideViewPort = true
-        settings.loadWithOverviewMode = true
-        
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-        
-        webView.webViewClient = object : WebViewClient() {
-            override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
-                webView.postDelayed({ webView.reload() }, 5000)
+        webView?.let { view ->
+            val settings = view.settings
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.mediaPlaybackRequiresUserGesture = false
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = true
+            
+            // Suporte a Mixed Content para vídeos HTTP em sites HTTPS
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            
+            view.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            
+            view.webViewClient = object : WebViewClient() {
+                override fun onReceivedError(v: WebView?, r: WebResourceRequest?, e: WebResourceError?) {
+                    Log.w(TAG, "Erro no WebView. Recarregando...")
+                    view.postDelayed({ view.reload() }, 5000)
+                }
+            }
+            
+            view.webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(message: ConsoleMessage?): Boolean {
+                    Log.d("WebViewConsole", message?.message() ?: "")
+                    return true
+                }
             }
         }
-        
-        webView.webChromeClient = WebChromeClient()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -182,11 +225,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::webView.isInitialized) webView.onResume()
+        webView?.onResume()
     }
 
     override fun onPause() {
         super.onPause()
-        if (::webView.isInitialized) webView.onPause()
+        webView?.onPause()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        currentPairingCode = null // Para parar o polling
     }
 }
