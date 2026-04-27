@@ -13,6 +13,14 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.PixelFormat
+import android.media.ImageReader
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -29,6 +37,10 @@ class MainActivity : AppCompatActivity() {
     private var statusText: TextView? = null
     private var progressBar: ProgressBar? = null
 
+    private var projectionManager: MediaProjectionManager? = null
+    private var mediaProjection: MediaProjection? = null
+    private val REQUEST_CODE_SCREEN_CAPTURE = 1001
+    
     private val SUPABASE_URL = "https://tbotzfqrpeufvqxtpjci.supabase.co"
     private val SUPABASE_KEY = "sb_publishable_PA03417QIfOz8FyoaHB36w_VTzRkbL2"
     private val BASE_PLAYER_URL = "https://digitalsignagepro.vercel.app/player/"
@@ -186,8 +198,14 @@ class MainActivity : AppCompatActivity() {
             settings.databaseEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             
+            // Adiciona SignagePlayer ao final do UserAgent para o site reconhecer o App
+            val defaultUA = settings.userAgentString
+            settings.userAgentString = "$defaultUA SignagePlayer/1.0"
+            
+            view.addJavascriptInterface(WebAppInterface(this), "Android")
+            
+            view.webChromeClient = WebChromeClient()
             view.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
@@ -198,6 +216,34 @@ class MainActivity : AppCompatActivity() {
                     Log.e(TAG, "Erro WebView: $description")
                     v?.postDelayed({ v.reload() }, 10000)
                 }
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CODE_SCREEN_CAPTURE) {
+            if (resultCode == RESULT_OK && data != null) {
+                projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                mediaProjection = projectionManager?.getMediaProjection(resultCode, data)
+                // Opcional: tirar o primeiro print agora se quiser
+            } else {
+                Toast.makeText(this, "Permissão de captura negada", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    inner class WebAppInterface(private val context: Context) {
+        @JavascriptInterface
+        fun takeSystemScreenshot() {
+            if (mediaProjection == null) {
+                // Pede permissão pela primeira vez
+                val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CODE_SCREEN_CAPTURE)
+            } else {
+                // Já tem permissão, pode tirar o print
+                // (Implementação futura: capturar o frame real aqui)
+                Log.d(TAG, "Iniciando captura de sistema...")
             }
         }
     }
