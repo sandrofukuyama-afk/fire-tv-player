@@ -237,15 +237,97 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun takeSystemScreenshot() {
             if (mediaProjection == null) {
-                // Pede permissão pela primeira vez
                 val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CODE_SCREEN_CAPTURE)
-            } else {
-                // Já tem permissão, pode tirar o print
-                // (Implementação futura: capturar o frame real aqui)
-                Log.d(TAG, "Iniciando captura de sistema...")
+                return
             }
+            
+            // Tira o print usando ImageReader
+            val metrics = resources.displayMetrics
+            val width = metrics.widthPixels
+            val height = metrics.heightPixels
+            val density = metrics.densityDpi
+            
+            val imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            val virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "Screenshot", width, height, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader.surface, null, null
+            )
+            
+            imageReader.setOnImageAvailableListener({ reader ->
+                val image = reader.acquireLatestImage()
+                if (image != null) {
+                    val planes = image.planes
+                    val buffer = planes[0].buffer
+                    val pixelStride = planes[0].pixelStride
+                    val rowStride = planes[0].rowStride
+                    val rowPadding = rowStride - pixelStride * width
+                    
+                    val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
+                    bitmap.copyPixelsFromBuffer(buffer)
+                    image.close()
+                    virtualDisplay?.release()
+                    reader.close()
+                    
+                    // Upload para o Supabase
+                    uploadScreenshot(bitmap)
+                }
+            }, handler)
         }
+    }
+
+    private fun uploadScreenshot(bitmap: Bitmap) {
+        val sharedPref = getPreferences(Context.MODE_PRIVATE)
+        val screenId = sharedPref.getString("screenId", "") ?: return
+        
+        val stream = java.io.ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, stream)
+        val byteArray = stream.toByteArray()
+        
+        val fileName = "screenshots/${screenId}_${System.currentTimeMillis()}.jpg"
+        val body = RequestBody.create("image/jpeg".toMediaType(), byteArray)
+        
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/storage/v1/object/media/$fileName")
+            .post(body)
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) {
+                Log.e(TAG, "Erro upload screenshot", e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                if (response.isSuccessful) {
+                    val publicUrl = "$SUPABASE_URL/storage/v1/object/public/media/$fileName"
+                    // Atualiza o banco via RPC ou REST
+                    updateScreenThumbnail(screenId, publicUrl)
+                }
+                response.close()
+            }
+        })
+    }
+
+    private fun updateScreenThumbnail(screenId: String, url: String) {
+        val json = JSONObject()
+        json.put("thumbnail", url)
+        json.put("last_command", null)
+
+        val body = json.toString().toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("$SUPABASE_URL/rest/v1/screens?id=eq.$screenId")
+            .patch(body)
+            .addHeader("apikey", SUPABASE_KEY)
+            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+            .build()
+            
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) {}
+            override fun onResponse(call: Call, response: Response) { response.close() }
+        })
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
