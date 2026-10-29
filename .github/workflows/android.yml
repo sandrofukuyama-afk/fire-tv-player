@@ -12,7 +12,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: set up JDK 17
       uses: actions/setup-java@v4
       with:
@@ -20,31 +20,50 @@ jobs:
         distribution: 'temurin'
 
     - name: Setup Gradle
-      uses: gradle/gradle-build-action@v2
+      uses: gradle/actions/setup-gradle@v4
       with:
         gradle-version: 8.1.1
 
+    # Sem a assinatura fixa o APK não instalaria por cima das versões anteriores, então o build para aqui
+    - name: Decode signing keystore
+      env:
+        SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+      run: |
+        if [ -z "$SIGNING_KEYSTORE_BASE64" ]; then
+          echo "::error::Segredo SIGNING_KEYSTORE_BASE64 não configurado"
+          exit 1
+        fi
+        echo "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+
     - name: Build with Gradle
-      run: gradle assembleDebug
+      env:
+        SIGNING_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+        SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+        SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+        SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+      run: |
+        gradle assembleRelease
+        cp app/build/outputs/apk/release/app-release.apk digital-signage-pro.apk
+        # Mesmo arquivo com o nome antigo, para os links de download já existentes continuarem funcionando
+        cp app/build/outputs/apk/release/app-release.apk app-debug.apk
 
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       if: github.ref == 'refs/heads/main'
       with:
-        files: app/build/outputs/apk/debug/app-debug.apk
+        files: |
+          digital-signage-pro.apk
+          app-debug.apk
         tag_name: v${{ github.run_number }}
         name: Release v${{ github.run_number }}
         body: |
-          Atualização automática do Digital Signage Pro.
-          - Ícone atualizado
-          - Nome do app: Digital Signage Pro
+          Atualização automática do Digital Signage Pro (versão 2.0.${{ github.run_number }}).
+          A partir da 2.0 o APK tem assinatura fixa: as próximas versões instalam por cima sem perder o pareamento.
         draft: false
         prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
         name: signage-app
-        path: app/build/outputs/apk/debug/app-debug.apk
+        path: digital-signage-pro.apk

@@ -3,6 +3,11 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Assinatura fixa vinda dos segredos do GitHub: permite instalar atualizações por cima sem perder o pareamento.
+// Sem ela (build local), o APK de release usa a assinatura de teste.
+def releaseKeystore = System.getenv("SIGNING_KEYSTORE_PATH")
+def buildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+
 android {
     namespace 'com.antigravity.signage'
     compileSdk 33
@@ -11,14 +16,25 @@ android {
         applicationId "com.antigravity.signage"
         minSdk 21
         targetSdk 33
-        versionCode 1
-        versionName "1.0"
+        versionCode buildNumber
+        versionName "2.0.$buildNumber"
+    }
+
+    signingConfigs {
+        release {
+            if (releaseKeystore) {
+                storeFile file(releaseKeystore)
+                storePassword System.getenv("SIGNING_STORE_PASSWORD")
+                keyAlias System.getenv("SIGNING_KEY_ALIAS")
+                keyPassword System.getenv("SIGNING_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig releaseKeystore ? signingConfigs.release : signingConfigs.debug
         }
     }
     compileOptions {
@@ -33,14 +49,7 @@ android {
 dependencies {
     implementation 'androidx.core:core-ktx:1.10.1'
     implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation 'com.google.android.material:material:1.9.0'
-    
-    // Media3 ExoPlayer
-    implementation 'androidx.media3:media3-exoplayer:1.1.1'
-    implementation 'androidx.media3:media3-ui:1.1.1'
-    implementation 'androidx.media3:media3-common:1.1.1'
-    
+
     // Supabase / HTTP
     implementation 'com.squareup.okhttp3:okhttp:4.11.0'
-    implementation 'com.google.code.gson:gson:2.10.1'
 }

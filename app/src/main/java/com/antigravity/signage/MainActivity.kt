@@ -2,32 +2,24 @@ package com.antigravity.signage
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.*
 import android.widget.ProgressBar
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
-import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.PixelFormat
-import android.media.ImageReader
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
-import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
@@ -37,26 +29,28 @@ class MainActivity : AppCompatActivity() {
     private var statusText: TextView? = null
     private var progressBar: ProgressBar? = null
 
-    private var projectionManager: MediaProjectionManager? = null
-    private var mediaProjection: MediaProjection? = null
-    private val REQUEST_CODE_SCREEN_CAPTURE = 1001
-    
     private val SUPABASE_URL = "https://tbotzfqrpeufvqxtpjci.supabase.co"
     private val SUPABASE_KEY = "sb_publishable_PA03417QIfOz8FyoaHB36w_VTzRkbL2"
     private val BASE_PLAYER_URL = "https://digitalsignagepro.vercel.app/player/"
 
+    // O banco expira o código em 10 minutos; trocamos antes disso para o código na tela sempre valer
+    private val PAIRING_CODE_LIFETIME_MS = 9 * 60 * 1000L
+
     private val client = OkHttpClient()
     private val handler = Handler(Looper.getMainLooper())
     private var currentPairingCode: String? = null
+    private var currentScreenId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "App iniciado")
-        
+
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemUI()
-        
-        WebView.setWebContentsDebuggingEnabled(true)
+
+        // Depuração remota da WebView só em builds de teste
+        val isDebuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        WebView.setWebContentsDebuggingEnabled(isDebuggable)
 
         val sharedPref = getPreferences(Context.MODE_PRIVATE)
         val screenId = sharedPref.getString("screenId", null)
@@ -81,6 +75,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun generateAndRegisterCode() {
+        // Cancela tentativas e consultas do código anterior
+        handler.removeCallbacksAndMessages(null)
+
         val code = (100000..999999).random().toString()
         currentPairingCode = code
         pairingCodeText?.text = code
@@ -101,33 +98,40 @@ class MainActivity : AppCompatActivity() {
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
+                if (code != currentPairingCode) return
                 runOnUiThread { statusText?.text = "Erro de rede. Tentando..." }
                 handler.postDelayed({ generateAndRegisterCode() }, 5000)
             }
 
             override fun onResponse(call: Call, response: Response) {
-                if (response.isSuccessful) {
-                    runOnUiThread { 
-                        statusText?.text = "Aguardando ativação..." 
+                val ok = response.use { it.isSuccessful }
+                if (code != currentPairingCode) return
+                if (ok) {
+                    runOnUiThread {
+                        statusText?.text = "Aguardando ativação..."
                         progressBar?.visibility = View.GONE
                     }
-                    startPolling()
+                    startPolling(code, System.currentTimeMillis())
                 } else {
                     handler.postDelayed({ generateAndRegisterCode() }, 5000)
                 }
-                response.close()
             }
         })
     }
 
-    private fun startPolling() {
+    private fun startPolling(code: String, registeredAt: Long) {
         handler.postDelayed(object : Runnable {
             override fun run() {
                 val self = this
-                if (currentPairingCode == null) return
+                if (code != currentPairingCode) return
+
+                if (System.currentTimeMillis() - registeredAt > PAIRING_CODE_LIFETIME_MS) {
+                    generateAndRegisterCode()
+                    return
+                }
 
                 val request = Request.Builder()
-                    .url("$SUPABASE_URL/rest/v1/pairing_codes?code=eq.$currentPairingCode&select=screen_id")
+                    .url("$SUPABASE_URL/rest/v1/pairing_codes?code=eq.$code&select=screen_id")
                     .get()
                     .addHeader("apikey", SUPABASE_KEY)
                     .addHeader("Authorization", "Bearer $SUPABASE_KEY")
@@ -139,21 +143,20 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     override fun onResponse(call: Call, response: Response) {
-                        val body = response.body?.string()
-                        if (response.isSuccessful && body != null) {
+                        val body = response.use { if (it.isSuccessful) it.body?.string() else null }
+                        if (code != currentPairingCode) return
+                        if (body != null) {
                             try {
                                 val jsonArray = JSONArray(body)
                                 if (jsonArray.length() > 0) {
                                     val obj = jsonArray.getJSONObject(0)
                                     if (!obj.isNull("screen_id")) {
-                                        val screenId = obj.getString("screen_id")
-                                        saveAndStart(screenId)
+                                        saveAndStart(obj.getString("screen_id"))
                                         return
                                     }
                                 }
                             } catch (e: Exception) {}
                         }
-                        response.close()
                         handler.postDelayed(self, 3000)
                     }
                 })
@@ -162,6 +165,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveAndStart(screenId: String) {
+        currentPairingCode = null
         val sharedPref = getPreferences(Context.MODE_PRIVATE)
         with(sharedPref.edit()) {
             putString("screenId", screenId)
@@ -170,26 +174,18 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { startPlayer(screenId.trim()) }
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
     private fun startPlayer(screenId: String) {
+        currentScreenId = screenId
+        destroyWebView()
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webview)
 
-        webView?.let { v ->
-            v.clearCache(true)
-            val cookieManager = CookieManager.getInstance()
-            cookieManager.setAcceptCookie(true)
-            cookieManager.removeAllCookies(null)
-            cookieManager.flush()
-            
-            setupWebView()
-            
-            val finalUrl = "$BASE_PLAYER_URL$screenId?t=${System.currentTimeMillis()}"
-            v.loadUrl(finalUrl)
-        }
+        // Sem limpar o cache: o player guarda a página e os vídeos para funcionar sem internet
+        setupWebView()
+        webView?.loadUrl("$BASE_PLAYER_URL$screenId")
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
+    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
     private fun setupWebView() {
         webView?.let { view ->
             val settings = view.settings
@@ -197,137 +193,57 @@ class MainActivity : AppCompatActivity() {
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
-            settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+
             // Adiciona SignagePlayer ao final do UserAgent para o site reconhecer o App
             val defaultUA = settings.userAgentString
-            settings.userAgentString = "$defaultUA SignagePlayer/1.0"
-            
-            view.addJavascriptInterface(WebAppInterface(this), "Android")
-            
+            settings.userAgentString = "$defaultUA SignagePlayer/2.0"
+
+            view.addJavascriptInterface(WebAppInterface(), "Android")
+
             view.webChromeClient = WebChromeClient()
             view.webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                }
-
                 @Deprecated("Deprecated in Java")
                 override fun onReceivedError(v: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
                     Log.e(TAG, "Erro WebView: $description")
                     v?.postDelayed({ v.reload() }, 10000)
                 }
+
+                // O navegador interno travou ou foi encerrado pelo sistema: recria o player em vez de fechar o app
+                override fun onRenderProcessGone(v: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                    Log.e(TAG, "WebView encerrada, recriando o player")
+                    val screenId = currentScreenId
+                    handler.post {
+                        if (screenId != null) startPlayer(screenId) else showPairingScreen()
+                    }
+                    return true
+                }
             }
         }
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_CODE_SCREEN_CAPTURE) {
-            if (resultCode == RESULT_OK && data != null) {
-                projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                mediaProjection = projectionManager?.getMediaProjection(resultCode, data)
-                // Opcional: tirar o primeiro print agora se quiser
-            } else {
-                Toast.makeText(this, "Permissão de captura negada", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    inner class WebAppInterface(private val context: Context) {
+    // Chamado pela página do player
+    inner class WebAppInterface {
+        // A tela foi excluída no painel: apaga o pareamento e mostra um novo código
         @JavascriptInterface
-        fun takeSystemScreenshot() {
-            if (mediaProjection == null) {
-                val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CODE_SCREEN_CAPTURE)
-                return
+        fun resetPairing() {
+            runOnUiThread {
+                Log.w(TAG, "Tela não existe mais no painel, voltando ao pareamento")
+                getPreferences(Context.MODE_PRIVATE).edit().remove("screenId").apply()
+                currentScreenId = null
+                destroyWebView()
+                showPairingScreen()
             }
-            
-            // Tira o print usando ImageReader
-            val metrics = resources.displayMetrics
-            val width = metrics.widthPixels
-            val height = metrics.heightPixels
-            val density = metrics.densityDpi
-            
-            val imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-            val virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "Screenshot", width, height, density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader.surface, null, null
-            )
-            
-            imageReader.setOnImageAvailableListener({ reader ->
-                val image = reader.acquireLatestImage()
-                if (image != null) {
-                    val planes = image.planes
-                    val buffer = planes[0].buffer
-                    val pixelStride = planes[0].pixelStride
-                    val rowStride = planes[0].rowStride
-                    val rowPadding = rowStride - pixelStride * width
-                    
-                    val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
-                    bitmap.copyPixelsFromBuffer(buffer)
-                    image.close()
-                    virtualDisplay?.release()
-                    reader.close()
-                    
-                    // Upload para o Supabase
-                    uploadScreenshot(bitmap)
-                }
-            }, handler)
         }
     }
 
-    private fun uploadScreenshot(bitmap: Bitmap) {
-        val sharedPref = getPreferences(Context.MODE_PRIVATE)
-        val screenId = sharedPref.getString("screenId", "") ?: return
-        
-        val stream = java.io.ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, stream)
-        val byteArray = stream.toByteArray()
-        
-        val fileName = "screenshots/${screenId}_${System.currentTimeMillis()}.jpg"
-        val body = RequestBody.create("image/jpeg".toMediaType(), byteArray)
-        
-        val request = Request.Builder()
-            .url("$SUPABASE_URL/storage/v1/object/media/$fileName")
-            .post(body)
-            .addHeader("apikey", SUPABASE_KEY)
-            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
-            .build()
-
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: java.io.IOException) {
-                Log.e(TAG, "Erro upload screenshot", e)
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                if (response.isSuccessful) {
-                    val publicUrl = "$SUPABASE_URL/storage/v1/object/public/media/$fileName"
-                    // Atualiza o banco via RPC ou REST
-                    updateScreenThumbnail(screenId, publicUrl)
-                }
-                response.close()
-            }
-        })
-    }
-
-    private fun updateScreenThumbnail(screenId: String, url: String) {
-        val json = JSONObject()
-        json.put("thumbnail", url)
-        json.put("last_command", null)
-
-        val body = json.toString().toRequestBody("application/json".toMediaType())
-        val request = Request.Builder()
-            .url("$SUPABASE_URL/rest/v1/screens?id=eq.$screenId")
-            .patch(body)
-            .addHeader("apikey", SUPABASE_KEY)
-            .addHeader("Authorization", "Bearer $SUPABASE_KEY")
-            .build()
-            
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: java.io.IOException) {}
-            override fun onResponse(call: Call, response: Response) { response.close() }
-        })
+    private fun destroyWebView() {
+        webView?.let { v ->
+            (v.parent as? ViewGroup)?.removeView(v)
+            v.stopLoading()
+            v.destroy()
+        }
+        webView = null
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -344,6 +260,7 @@ class MainActivity : AppCompatActivity() {
                 or View.SYSTEM_UI_FLAG_FULLSCREEN)
     }
 
+    @Deprecated("Deprecated in Java")
     override fun onBackPressed() {}
 
     override fun onResume() {
@@ -358,7 +275,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         currentPairingCode = null
+        handler.removeCallbacksAndMessages(null)
+        destroyWebView()
+        super.onDestroy()
     }
 }
